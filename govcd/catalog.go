@@ -103,12 +103,50 @@ func (cat *Catalog) FindCatalogItem(catalogItemName string) (CatalogItem, error)
 	return CatalogItem{}, nil
 }
 
+// UploadOvfUrl uploads a vApp template from a remote URL and waits for all the
+// associated vapp template tasks to complete
+func (cat *Catalog) UploadOvfUrl(ovaFileName, itemName, description string) error {
+	util.Logger.Printf("[TRACE] UploadOvfUrl - ovaFileName: %s  \n", ovaFileName)
+
+	if *cat == (Catalog{}) {
+		return errors.New("catalog can not be empty or nil")
+	}
+	for _, catalogItemName := range getExistingCatalogItems(cat) {
+		if catalogItemName == itemName {
+			return fmt.Errorf("catalog item '%s' already exists. Upload with different name", itemName)
+		}
+	}
+	catalogItemUploadURL, err := findCatalogItemUploadLink(cat, "application/vnd.vmware.vcloud.uploadVAppTemplateParams+xml")
+	if err != nil {
+		return err
+	}
+	vappTemplateUrl, err := createItemForUploadFromUrl(cat.client, catalogItemUploadURL, itemName, description, ovaFileName)
+	if err != nil {
+		return fmt.Errorf("Failed to createItemForUploadFromUrl - %v", err)
+	}
+	vappTemplate, err := queryVappTemplate(cat.client, vappTemplateUrl, itemName)
+	if err != nil {
+		return fmt.Errorf("Failed to queryVappTemplate - %v", err)
+	}
+	util.Logger.Printf("[TRACE] UploadOvf - wait for completion")
+	task := NewTask(cat.client)
+	for _, taskItem := range vappTemplate.Tasks.Task {
+		task.Task = taskItem
+		err = task.WaitTaskCompletion()
+		if err != nil {
+			return fmt.Errorf("error performing task: %s", err)
+		}
+	}
+	return nil
+}
+
 // UploadOvf uploads an ova/ovf file to a catalog. This method only uploads bits to vCD spool area.
 // ovaFileName should be the path of OVA or OVF file(not ovf folder) itself. For OVF,
 // user need to make sure all the files that OVF depends on exist and locate under the same folder.
 // Returns errors if any occur during upload from vCD or upload process. On upload fail client may need to
 // remove vCD catalog item which waits for files to be uploaded. Files from ova are extracted to system
 // temp folder "govcd+random number" and left for inspection on error.
+
 func (cat *Catalog) UploadOvf(ovaFileName, itemName, description string, uploadPieceSize int64) (UploadTask, error) {
 
 	//	On a very high level the flow is as follows
@@ -180,7 +218,6 @@ func (cat *Catalog) UploadOvf(ovaFileName, itemName, description string, uploadP
 	if err != nil {
 		return UploadTask{}, err
 	}
-
 	vappTemplateUrl, err := createItemForUpload(cat.client, catalogItemUploadURL, itemName, description)
 	if err != nil {
 		return UploadTask{}, err
@@ -479,6 +516,39 @@ func createItemForUpload(client *Client, createHREF *url.URL, catalogItemName st
 		"<UploadVAppTemplateParams xmlns=\"" + types.XMLNamespaceVCloud + "\" name=\"" + catalogItemName + "\" >" +
 			"<Description>" + itemDescription + "</Description>" +
 			"</UploadVAppTemplateParams>")
+
+	request := client.NewRequest(map[string]string{}, http.MethodPost, *createHREF, reqBody)
+	request.Header.Add("Content-Type", "application/vnd.vmware.vcloud.uploadVAppTemplateParams+xml")
+
+	response, err := checkResp(client.Http.Do(request))
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	catalogItemParsed := &types.CatalogItem{}
+	if err = decodeBody(types.BodyTypeXML, response, catalogItemParsed); err != nil {
+		return nil, err
+	}
+
+	util.Logger.Printf("[TRACE] Catalog item parsed: %#v\n", catalogItemParsed)
+
+	ovfUploadUrl, err := url.ParseRequestURI(catalogItemParsed.Entity.HREF)
+	if err != nil {
+		return nil, err
+	}
+
+	return ovfUploadUrl, nil
+}
+
+func createItemForUploadFromUrl(client *Client, createHREF *url.URL, catalogItemName string, itemDescription string, sourceHref string) (*url.URL, error) {
+	util.Logger.Printf("[TRACE] createItemForUpload: %s, item name: %v, description: %v sourceHref: %s \n", createHREF, catalogItemName, itemDescription, sourceHref)
+	reqBody := bytes.NewBufferString(
+		"<UploadVAppTemplateParams xmlns=\"" + types.XMLNamespaceVCloud + "\" name=\"" + catalogItemName + "\" sourceHref=\"" + sourceHref + "\" >" +
+			"<Description>" + itemDescription + "</Description>" +
+			"</UploadVAppTemplateParams>")
+
+	util.Logger.Printf("[TRACE] createItemForUpload: %s, item name: %v, description: %v sourceHref: %s  body [%s]\n", createHREF, catalogItemName, itemDescription, sourceHref, reqBody.String())
 
 	request := client.NewRequest(map[string]string{}, http.MethodPost, *createHREF, reqBody)
 	request.Header.Add("Content-Type", "application/vnd.vmware.vcloud.uploadVAppTemplateParams+xml")
