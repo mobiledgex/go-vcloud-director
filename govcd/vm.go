@@ -722,8 +722,10 @@ func (vm *VM) GetQuestion() (types.VmPendingQuestion, error) {
 	apiEndpoint.Path += "/question"
 
 	req := vm.client.NewRequest(map[string]string{}, http.MethodGet, *apiEndpoint, nil)
-
 	resp, err := vm.client.Http.Do(req)
+	if err != nil {
+		return types.VmPendingQuestion{}, err
+	}
 
 	// vCD security feature - on no question return 403 access error
 	if http.StatusForbidden == resp.StatusCode {
