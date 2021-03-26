@@ -73,7 +73,7 @@ var _ = vcdVersionToApiVersion
 //
 // vCD version mapping to API version support https://code.vmware.com/doc/preview?id=8072
 func (cli *Client) APIVCDMaxVersionIs(versionConstraint string) bool {
-	err := cli.vcdFetchSupportedVersions()
+	err := cli.vcdFetchsupportedVersions()
 	if err != nil {
 		util.Logger.Printf("[ERROR] could not retrieve supported versions: %s", err)
 		return false
@@ -115,10 +115,10 @@ func (cli *Client) APIClientVersionIs(versionConstraint string) bool {
 	return isSupported
 }
 
-// vcdFetchSupportedVersions retrieves list of supported versions from
+// vcdFetchsupportedVersions retrieves list of supported versions from
 // /api/versions endpoint and stores them in VCDClient for future uses.
 // It only does it once.
-func (cli *Client) vcdFetchSupportedVersions() error {
+func (cli *Client) vcdFetchsupportedVersions() error {
 	// Only fetch /versions if it is not stored already
 	numVersions := len(cli.supportedVersions.VersionInfos)
 	if numVersions > 0 {
@@ -132,7 +132,10 @@ func (cli *Client) vcdFetchSupportedVersions() error {
 	suppVersions := new(SupportedVersions)
 	_, err := cli.ExecuteRequest(apiEndpoint.String(), http.MethodGet,
 		"", "error fetching versions: %s", nil, suppVersions)
-
+	if err != nil {
+		util.Logger.Printf("[ERROR] error in vcdFetchsupportedVersions: %v", err)
+		return fmt.Errorf("Error in vcdFetchsupportedVersions: %v", err)
+	}
 	cli.supportedVersions = *suppVersions
 
 	// Log all supported API versions in one line to help identify vCD version from logs
@@ -209,7 +212,7 @@ func (cli *Client) apiVersionMatchesConstraint(version, versionConstraint string
 
 // validateAPIVersion fetches API versions
 func (cli *Client) validateAPIVersion() error {
-	err := cli.vcdFetchSupportedVersions()
+	err := cli.vcdFetchsupportedVersions()
 	if err != nil {
 		return fmt.Errorf("could not retrieve supported versions: %s", err)
 	}

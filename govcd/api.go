@@ -52,6 +52,15 @@ type Client struct {
 	UserAgent string
 
 	supportedVersions SupportedVersions // Versions from /api/versions endpoint
+
+	// OAUTH
+	OauthUrl                string
+	ClientTlsCert           string
+	ClientTlsKey            string
+	OauthClientId           string
+	OauthClientSecret       string
+	OauthAccessToken        string
+	OauthAccessTokenExpires int
 }
 
 // AuthorizationHeader header key used by default to set the authorization token.
@@ -115,6 +124,7 @@ func debugShowRequest(req *http.Request, payload string) {
 		fmt.Printf("host:    %s\n", req.Host)
 		fmt.Printf("length:  %d\n", req.ContentLength)
 		fmt.Printf("URL:     %s\n", req.URL.String())
+		fmt.Printf("QueryParms:  %s\n", req.URL.RawQuery)
 		fmt.Printf("header:  %s\n", header)
 		fmt.Printf("payload: %s\n", payload)
 		fmt.Println()
@@ -194,11 +204,12 @@ func (cli *Client) newRequest(params map[string]string, notEncodedParams map[str
 		readBody, _ = ioutil.ReadAll(body)
 		body = bytes.NewReader(readBody)
 	}
-
 	// Build the request, no point in checking for errors here as we're just
 	// passing a string version of an url.URL struct and http.NewRequest returns
 	// error only if can't process an url.ParseRequestURI().
 	req, _ := http.NewRequest(method, reqUrl.String(), body)
+
+	util.Logger.Printf("[OAUTH] VCDAuthHeader %s VCDToken %s", cli.VCDAuthHeader, cli.VCDToken)
 
 	if cli.VCDAuthHeader != "" && cli.VCDToken != "" {
 		// Add the authorization header
@@ -211,6 +222,10 @@ func (cli *Client) newRequest(params map[string]string, notEncodedParams map[str
 	}
 	// The deprecated authorization token is 32 characters long
 	// The bearer token is 612 characters long
+
+	if cli.OauthUrl != "" {
+		req.Header.Add("Authorization", "Bearer "+cli.OauthAccessToken)
+	}
 	if len(cli.VCDToken) > 32 {
 		req.Header.Add("X-Vmware-Vcloud-Token-Type", "Bearer")
 		req.Header.Add("Authorization", "bearer "+cli.VCDToken)
@@ -244,13 +259,24 @@ func (cli *Client) newRequest(params map[string]string, notEncodedParams map[str
 
 // NewRequest creates a new HTTP request and applies necessary auth headers if set.
 func (cli *Client) NewRequest(params map[string]string, method string, reqUrl url.URL, body io.Reader) *http.Request {
-	return cli.NewRequestWitNotEncodedParams(params, nil, method, reqUrl, body)
+	newUrl, err := cli.fixUrlForAgw(reqUrl)
+	if err != nil {
+		// this should ideally pass the error back, but there is a lot of existing VCD code we don't want
+		// to change for this.  So treat this as fatal because in any case it indicates some kind of config err
+		util.Logger.Fatalf("Error in fixing URL for OAUTH")
+
+	}
+	return cli.NewRequestWitNotEncodedParams(params, nil, method, *newUrl, body)
 }
 
 // NewRequestWithApiVersion creates a new HTTP request and applies necessary auth headers if set.
 // Allows to override default request API Version
-func (cli *Client) NewRequestWithApiVersion(params map[string]string, method string, reqUrl url.URL, body io.Reader, apiVersion string) *http.Request {
-	return cli.NewRequestWitNotEncodedParamsWithApiVersion(params, nil, method, reqUrl, body, apiVersion)
+func (cli *Client) NewRequestWithApiVersion(params map[string]string, method string, reqUrl url.URL, body io.Reader, apiVersion string) (*http.Request, error) {
+	newUrl, err := cli.fixUrlForAgw(reqUrl)
+	if err != nil {
+		return nil, err
+	}
+	return cli.NewRequestWitNotEncodedParamsWithApiVersion(params, nil, method, *newUrl, body, apiVersion), nil
 }
 
 // ParseErr takes an error XML resp, error interface for unmarshalling and returns a single string for
@@ -410,8 +436,42 @@ func (client *Client) ExecuteTaskRequestWithApiVersion(pathURL, requestType, con
 // payload - XML struct which will be marshalled and added as body/payload
 // apiVersion - api version which will be used in request
 // E.g. client.ExecuteTaskRequest(updateDiskLink.HREF, http.MethodPut, updateDiskLink.Type, "error updating disk: %s", xmlPayload)
-func (client *Client) executeTaskRequest(pathURL, requestType, contentType, errorMessage string, payload interface{}, apiVersion string) (Task, error) {
 
+func (client *Client) fixUrlForAgw(startUrl url.URL) (*url.URL, error) {
+	util.Logger.Printf("[OAUTH] fixUrlForAgw startUrl: %v client.VCDHREF %v", startUrl.String(), client.VCDHREF.String())
+
+	urlString := startUrl.String()
+	newUrlString, err := client.fixUrlStringForAgw(urlString)
+	if err != nil {
+		return nil, err
+	}
+	return url.Parse(newUrlString)
+}
+
+// fixUrlStringForAgw replaces the destination path with the confirmed VCDHREF. This is
+// needed with working with an Oauth server and Application GW
+func (client *Client) fixUrlStringForAgw(pathURL string) (string, error) {
+
+	if client.OauthUrl != "" {
+		util.Logger.Printf("[OAUTH] fixUrlStringForAgw pathUrl: %s VCDHREF %v", pathURL, client.VCDHREF)
+
+		url, err := url.Parse(pathURL)
+		if err != nil {
+			return pathURL, fmt.Errorf("Error fixing path url for OAUTH %v: %v", url, err)
+		}
+		if url.Host == client.VCDHREF.Host {
+			util.Logger.Printf("[OAUTH] host is already that of the AGW, skipping")
+			return pathURL, nil
+		}
+		url.Host = client.VCDHREF.Host
+		url.Path = client.VCDHREF.Path + strings.TrimPrefix(url.Path, "/api")
+		pathURL = url.String()
+		util.Logger.Printf("[OAUTH] new replaced pathURL: %s", pathURL)
+	}
+	return pathURL, nil
+}
+
+func (client *Client) executeTaskRequest(pathURL, requestType, contentType, errorMessage string, payload interface{}, apiVersion string) (Task, error) {
 	if !isMessageWithPlaceHolder(errorMessage) {
 		return Task{}, fmt.Errorf("error message has to include place holder for error")
 	}
@@ -444,7 +504,11 @@ func (client *Client) executeTaskRequest(pathURL, requestType, contentType, erro
 // payload - XML struct which will be marshalled and added as body/payload
 // E.g. client.ExecuteRequestWithoutResponse(catalogItemHREF.String(), http.MethodDelete, "", "error deleting Catalog item: %s", nil)
 func (client *Client) ExecuteRequestWithoutResponse(pathURL, requestType, contentType, errorMessage string, payload interface{}) error {
-	return client.executeRequestWithoutResponse(pathURL, requestType, contentType, errorMessage, payload, client.APIVersion)
+	replacedUrl, err := client.fixUrlStringForAgw(pathURL)
+	if err != nil {
+		return err
+	}
+	return client.executeRequestWithoutResponse(replacedUrl, requestType, contentType, errorMessage, payload, client.APIVersion)
 }
 
 // Helper function creates request, runs it, checks response and do not expect any values from it.
@@ -456,7 +520,11 @@ func (client *Client) ExecuteRequestWithoutResponse(pathURL, requestType, conten
 // apiVersion - api version which will be used in request
 // E.g. client.ExecuteRequestWithoutResponse(catalogItemHREF.String(), http.MethodDelete, "", "error deleting Catalog item: %s", nil)
 func (client *Client) ExecuteRequestWithoutResponseWithApiVersion(pathURL, requestType, contentType, errorMessage string, payload interface{}, apiVersion string) error {
-	return client.executeRequestWithoutResponse(pathURL, requestType, contentType, errorMessage, payload, apiVersion)
+	replacedUrl, err := client.fixUrlStringForAgw(pathURL)
+	if err != nil {
+		return err
+	}
+	return client.executeRequestWithoutResponse(replacedUrl, requestType, contentType, errorMessage, payload, apiVersion)
 }
 
 // Helper function creates request, runs it, checks response and do not expect any values from it.
@@ -501,7 +569,11 @@ func (client *Client) executeRequestWithoutResponse(pathURL, requestType, conten
 // E.g. 	unmarshalledAdminOrg := &types.AdminOrg{}
 // client.ExecuteRequest(adminOrg.AdminOrg.HREF, http.MethodGet, "", "error refreshing organization: %s", nil, unmarshalledAdminOrg)
 func (client *Client) ExecuteRequest(pathURL, requestType, contentType, errorMessage string, payload, out interface{}) (*http.Response, error) {
-	return client.executeRequest(pathURL, requestType, contentType, errorMessage, payload, out, client.APIVersion)
+	replacedUrl, err := client.fixUrlStringForAgw(pathURL)
+	if err != nil {
+		return nil, err
+	}
+	return client.executeRequest(replacedUrl, requestType, contentType, errorMessage, payload, out, client.APIVersion)
 }
 
 // Helper function creates request, runs it, check responses and parses out interface from response.
@@ -598,8 +670,8 @@ func executeRequestWithApiVersion(pathURL, requestType, contentType string, payl
 
 // executeRequestCustomErr performs request and unmarshals API error to errType if not 2xx status was returned
 func executeRequestCustomErr(pathURL string, params map[string]string, requestType, contentType string, payload interface{}, client *Client, errType error, apiVersion string) (*http.Response, error) {
-	url, _ := url.ParseRequestURI(pathURL)
 
+	url, _ := url.ParseRequestURI(pathURL)
 	var req *http.Request
 	switch requestType {
 	case http.MethodPost, http.MethodPut:
@@ -610,10 +682,17 @@ func executeRequestCustomErr(pathURL string, params map[string]string, requestTy
 		}
 		body := bytes.NewBufferString(xml.Header + string(marshaledXml))
 
-		req = client.NewRequestWithApiVersion(params, requestType, *url, body, apiVersion)
+		req, err = client.NewRequestWithApiVersion(params, requestType, *url, body, apiVersion)
+		if err != nil {
+			return nil, err
+		}
 
 	default:
-		req = client.NewRequestWithApiVersion(params, requestType, *url, nil, apiVersion)
+		var err error
+		req, err = client.NewRequestWithApiVersion(params, requestType, *url, nil, apiVersion)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if contentType != "" {
