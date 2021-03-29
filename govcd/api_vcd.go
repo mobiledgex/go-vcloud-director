@@ -298,9 +298,7 @@ func (vcdCli *VCDClient) Authenticate(username, password, org string) error {
 	return err
 }
 
-// GetAuthResponse performs authentication and returns the full HTTP response
-// The purpose of this function is to preserve information that is useful
-// for token-based authentication
+// GetOauthResponse connects to the oath server to get a token
 func (vcdCli *VCDClient) GetOauthResponse(username, password, org string) (*http.Response, error) {
 
 	util.Logger.Println("[OAUTH] GetOauthResponse", "OauthUrl", vcdCli.Client.OauthUrl)
