@@ -299,8 +299,27 @@ func (vcdCli *VCDClient) Authenticate(username, password, org string) error {
 // GetAuthResponse performs authentication and returns the full HTTP response
 // The purpose of this function is to preserve information that is useful
 // for token-based authentication
+func (vcdCli *VCDClient) GetOauthResponse(username, password, org string) (*http.Response, error) {
+
+	util.Logger.Println("[OAUTH] GetOauthResponse", "OauthUrl", vcdCli.Client.OauthUrl)
+	if vcdCli.Client.OauthUrl != "" {
+		resp, err := vcdCli.oauthAuthorize()
+		if err != nil {
+			return nil, fmt.Errorf("error oauth authorizing: %s", err)
+		}
+		util.Logger.Printf("oauthAuthorize response: %+v", resp)
+		return resp, nil
+	} else {
+		return nil, fmt.Errorf("Oauth specified but no OauthUrl in client")
+	}
+}
+
+// GetAuthResponse performs authentication and returns the full HTTP response
+// The purpose of this function is to preserve information that is useful
+// for token-based authentication
 func (vcdCli *VCDClient) GetAuthResponse(username, password, org string) (*http.Response, error) {
 
+	util.Logger.Println("[TRACE] GetAuthResponse", "OauthUrl", vcdCli.Client.OauthUrl)
 	if vcdCli.Client.OauthUrl != "" {
 		resp, err := vcdCli.oauthAuthorize()
 		if err != nil {
