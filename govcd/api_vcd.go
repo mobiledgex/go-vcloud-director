@@ -172,13 +172,13 @@ func (vcdCli *VCDClient) oauthAuthorize() (*http.Response, error) {
 	util.Logger.Printf("[OAUTH]: server %s insecure: %v", vcdCli.Client.OauthUrl, vcdCli.Insecure)
 	var missingItems []string
 	if vcdCli.Client.OauthClientId == "" {
-		missingItems = append(missingItems, "clientId")
+		missingItems = append(missingItems, "OauthClientId")
 	}
-	if vcdCli.Client.OauthClientId == "" {
-		missingItems = append(missingItems, "clientSecret")
+	if vcdCli.Client.OauthClientSecret == "" {
+		missingItems = append(missingItems, "OauthClientSecret")
 	}
 	if len(missingItems) > 0 {
-		return nil, fmt.Errorf("authorization is not possible because of these missing items: %v", missingItems)
+		return nil, fmt.Errorf("oauth is not possible because of these missing items: %v", missingItems)
 	}
 	x509cert, err := tls.X509KeyPair([]byte(vcdCli.Client.ClientTlsCert), []byte(vcdCli.Client.ClientTlsKey))
 	if err != nil {
@@ -237,6 +237,8 @@ func (client *VCDClient) CopyClient() (*VCDClient, error) {
 	newClient.Client.ClientTlsKey = client.Client.ClientTlsKey
 	newClient.Client.OauthAccessToken = client.Client.OauthAccessToken
 	newClient.Client.OauthAccessTokenExpires = client.Client.OauthAccessTokenExpires
+	newClient.Client.OauthClientId = client.Client.OauthClientId
+	newClient.Client.OauthClientSecret = client.Client.OauthClientId
 	newClient.Client.supportedVersions = client.Client.supportedVersions
 
 	if client.Client.ClientTlsCert != "" {
@@ -246,7 +248,8 @@ func (client *VCDClient) CopyClient() (*VCDClient, error) {
 		}
 		certs := []tls.Certificate{x509cert}
 		newClient.Client.Http.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{Certificates: certs, InsecureSkipVerify: client.Insecure},
+			TLSClientConfig:    &tls.Config{Certificates: certs, InsecureSkipVerify: client.Insecure},
+			DisableCompression: true, // gzip is not handled in responses
 		}
 	}
 	return newClient, nil
@@ -296,19 +299,28 @@ func (vcdCli *VCDClient) Authenticate(username, password, org string) error {
 	return err
 }
 
-// GetAuthResponse performs authentication and returns the full HTTP response
-// The purpose of this function is to preserve information that is useful
-// for token-based authentication
-func (vcdCli *VCDClient) GetAuthResponse(username, password, org string) (*http.Response, error) {
+// GetOauthResponse connects to the oath server to get a token
+func (vcdCli *VCDClient) GetOauthResponse(username, password, org string) (*http.Response, error) {
 
+	util.Logger.Println("[OAUTH] GetOauthResponse", "OauthUrl", vcdCli.Client.OauthUrl)
 	if vcdCli.Client.OauthUrl != "" {
 		resp, err := vcdCli.oauthAuthorize()
 		if err != nil {
 			return nil, fmt.Errorf("error oauth authorizing: %s", err)
 		}
 		util.Logger.Printf("oauthAuthorize response: %+v", resp)
+		return resp, nil
+	} else {
+		return nil, fmt.Errorf("Oauth specified but no OauthUrl in client")
 	}
-	// LoginUrl
+}
+
+// GetAuthResponse performs authentication and returns the full HTTP response
+// The purpose of this function is to preserve information that is useful
+// for token-based authentication
+func (vcdCli *VCDClient) GetAuthResponse(username, password, org string) (*http.Response, error) {
+
+	util.Logger.Println("[TRACE] GetAuthResponse", "OauthUrl", vcdCli.Client.OauthUrl)
 	err := vcdCli.vcdloginurl()
 	if err != nil {
 		return nil, fmt.Errorf("error finding LoginUrl: %s", err)
