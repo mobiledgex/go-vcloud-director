@@ -248,7 +248,8 @@ func (client *VCDClient) CopyClient() (*VCDClient, error) {
 		}
 		certs := []tls.Certificate{x509cert}
 		newClient.Client.Http.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{Certificates: certs, InsecureSkipVerify: client.Insecure},
+			TLSClientConfig:    &tls.Config{Certificates: certs, InsecureSkipVerify: client.Insecure},
+			DisableCompression: true, // gzip is not handled in responses
 		}
 	}
 	return newClient, nil
