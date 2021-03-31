@@ -192,7 +192,7 @@ func (vm *VM) PowerOnAndForceCustomization() error {
 	}
 
 	task, err := vm.client.ExecuteTaskRequest(apiEndpoint.String(), http.MethodPost,
-		"", "error powering on VM with customization: %s", powerOnAndCustomize)
+		"application/*+xml", "error powering on VM with customization: %s", powerOnAndCustomize)
 
 	if err != nil {
 		return err
