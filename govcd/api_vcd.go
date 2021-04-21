@@ -220,6 +220,14 @@ func (vcdCli *VCDClient) oauthAuthorize() (*http.Response, error) {
 func NewVCDClient(vcdEndpoint url.URL, insecure bool, options ...VCDClientOption) *VCDClient {
 	// Setting defaults
 
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: insecure,
+		},
+		Proxy:               http.ProxyFromEnvironment,
+		TLSHandshakeTimeout: 120 * time.Second, // Default timeout for TSL hand shake
+	}
+
 	vcdClient := &VCDClient{
 		Client: Client{
 			APIVersion: "32.0", // supported by 9.7+
@@ -228,14 +236,8 @@ func NewVCDClient(vcdEndpoint url.URL, insecure bool, options ...VCDClientOption
 			UserAgent: "go-vcloud-director",
 			VCDHREF:   vcdEndpoint,
 			Http: http.Client{
-				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{
-						InsecureSkipVerify: insecure,
-					},
-					Proxy:               http.ProxyFromEnvironment,
-					TLSHandshakeTimeout: 120 * time.Second, // Default timeout for TSL hand shake
-				},
-				Timeout: 600 * time.Second, // Default value for http request+response timeout
+				Transport: transport,
+				Timeout:   600 * time.Second, // Default value for http request+response timeout
 			},
 			MaxRetryTimeout: 60, // Default timeout in seconds for retries calls in functions
 		},
@@ -252,7 +254,7 @@ func NewVCDClient(vcdEndpoint url.URL, insecure bool, options ...VCDClientOption
 	}
 
 	// optionally load certs.  Might be better to do this upfront rather than replace the transport, but do
-	// not with to change the order at which the options are read in
+	// not want to change the order at which the options are read in
 	disableCompression := vcdClient.Client.OauthUrl != ""
 	if vcdClient.Client.ClientTlsCert != "" {
 		util.Logger.Printf("[OAUTH] setting up TLS certs")
@@ -261,10 +263,8 @@ func NewVCDClient(vcdEndpoint url.URL, insecure bool, options ...VCDClientOption
 			panic(fmt.Errorf("Unable to load key pair: %v", err))
 		}
 		certs := []tls.Certificate{x509cert}
-		vcdClient.Client.Http.Transport = &http.Transport{
-			TLSClientConfig:    &tls.Config{Certificates: certs, InsecureSkipVerify: insecure},
-			DisableCompression: disableCompression,
-		}
+		transport.TLSClientConfig = &tls.Config{Certificates: certs, InsecureSkipVerify: insecure}
+		transport.DisableCompression = disableCompression
 	}
 
 	return vcdClient
