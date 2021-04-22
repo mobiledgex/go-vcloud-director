@@ -28,7 +28,6 @@ type VCDClient struct {
 	Client      Client  // Client for the underlying VCD instance
 	sessionHREF url.URL // HREF for the session API
 	QueryHREF   url.URL // HREF for the query API
-	Insecure    bool
 }
 
 type OauthResponse struct {
@@ -169,7 +168,7 @@ func (vcdCli *VCDClient) vcdAuthorize(user, pass, org string) (*http.Response, e
 }
 
 func (vcdCli *VCDClient) oauthAuthorize() (*http.Response, error) {
-	util.Logger.Printf("[OAUTH]: server %s insecure: %v", vcdCli.Client.OauthUrl, vcdCli.Insecure)
+	util.Logger.Printf("[OAUTH]: server %s", vcdCli.Client.OauthUrl)
 	var missingItems []string
 	if vcdCli.Client.OauthClientId == "" {
 		missingItems = append(missingItems, "OauthClientId")
@@ -179,15 +178,6 @@ func (vcdCli *VCDClient) oauthAuthorize() (*http.Response, error) {
 	}
 	if len(missingItems) > 0 {
 		return nil, fmt.Errorf("oauth is not possible because of these missing items: %v", missingItems)
-	}
-	x509cert, err := tls.X509KeyPair([]byte(vcdCli.Client.ClientTlsCert), []byte(vcdCli.Client.ClientTlsKey))
-	if err != nil {
-		return nil, fmt.Errorf("Unable to load key pair: %v", err)
-	}
-	certs := []tls.Certificate{x509cert}
-
-	vcdCli.Client.Http.Transport = &http.Transport{
-		TLSClientConfig: &tls.Config{Certificates: certs, InsecureSkipVerify: vcdCli.Insecure},
 	}
 	at := os.Getenv("OAUTH_ACCESS_TOKEN")
 	if at != "" {
@@ -225,40 +215,19 @@ func (vcdCli *VCDClient) oauthAuthorize() (*http.Response, error) {
 	return resp, nil
 }
 
-func (client *VCDClient) CopyClient() (*VCDClient, error) {
-	newClient := NewVCDClient(client.Client.VCDHREF, client.Insecure)
-	newClient.sessionHREF = client.sessionHREF
-	newClient.QueryHREF = client.QueryHREF
-	newClient.Client.VCDToken = client.Client.VCDToken
-	newClient.Client.VCDAuthHeader = client.Client.VCDAuthHeader
-	newClient.Client.IsSysAdmin = client.Client.IsSysAdmin
-	newClient.Client.OauthUrl = client.Client.OauthUrl
-	newClient.Client.ClientTlsCert = client.Client.ClientTlsCert
-	newClient.Client.ClientTlsKey = client.Client.ClientTlsKey
-	newClient.Client.OauthAccessToken = client.Client.OauthAccessToken
-	newClient.Client.OauthAccessTokenExpires = client.Client.OauthAccessTokenExpires
-	newClient.Client.OauthClientId = client.Client.OauthClientId
-	newClient.Client.OauthClientSecret = client.Client.OauthClientId
-	newClient.Client.supportedVersions = client.Client.supportedVersions
-
-	if client.Client.ClientTlsCert != "" {
-		x509cert, err := tls.X509KeyPair([]byte(client.Client.ClientTlsCert), []byte(client.Client.ClientTlsKey))
-		if err != nil {
-			return nil, fmt.Errorf("Unable to load key pair: %v", err)
-		}
-		certs := []tls.Certificate{x509cert}
-		newClient.Client.Http.Transport = &http.Transport{
-			TLSClientConfig:    &tls.Config{Certificates: certs, InsecureSkipVerify: client.Insecure},
-			DisableCompression: true, // gzip is not handled in responses
-		}
-	}
-	return newClient, nil
-}
-
 // NewVCDClient initializes VMware vCloud Director client with reasonable defaults.
 // It accepts functions of type VCDClientOption for adjusting defaults.
 func NewVCDClient(vcdEndpoint url.URL, insecure bool, options ...VCDClientOption) *VCDClient {
 	// Setting defaults
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: insecure,
+		},
+		Proxy:               http.ProxyFromEnvironment,
+		TLSHandshakeTimeout: 120 * time.Second, // Default timeout for TSL hand shake
+	}
+
 	vcdClient := &VCDClient{
 		Client: Client{
 			APIVersion: "32.0", // supported by 9.7+
@@ -267,18 +236,11 @@ func NewVCDClient(vcdEndpoint url.URL, insecure bool, options ...VCDClientOption
 			UserAgent: "go-vcloud-director",
 			VCDHREF:   vcdEndpoint,
 			Http: http.Client{
-				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{
-						InsecureSkipVerify: insecure,
-					},
-					Proxy:               http.ProxyFromEnvironment,
-					TLSHandshakeTimeout: 120 * time.Second, // Default timeout for TSL hand shake
-				},
-				Timeout: 600 * time.Second, // Default value for http request+response timeout
+				Transport: transport,
+				Timeout:   600 * time.Second, // Default value for http request+response timeout
 			},
 			MaxRetryTimeout: 60, // Default timeout in seconds for retries calls in functions
 		},
-		Insecure: insecure,
 	}
 
 	// Override defaults with functional options
@@ -290,6 +252,21 @@ func NewVCDClient(vcdEndpoint url.URL, insecure bool, options ...VCDClientOption
 			panic(fmt.Sprintf("unable to initialize vCD client: %s", err))
 		}
 	}
+
+	// optionally load certs.  Might be better to do this upfront rather than replace the transport, but do
+	// not want to change the order at which the options are read in
+	disableCompression := vcdClient.Client.OauthUrl != ""
+	if vcdClient.Client.ClientTlsCert != "" {
+		util.Logger.Printf("[OAUTH] setting up TLS certs")
+		x509cert, err := tls.X509KeyPair([]byte(vcdClient.Client.ClientTlsCert), []byte(vcdClient.Client.ClientTlsKey))
+		if err != nil {
+			panic(fmt.Errorf("Unable to load key pair: %v", err))
+		}
+		certs := []tls.Certificate{x509cert}
+		transport.TLSClientConfig = &tls.Config{Certificates: certs, InsecureSkipVerify: insecure}
+		transport.DisableCompression = disableCompression
+	}
+
 	return vcdClient
 }
 
